@@ -10,6 +10,14 @@ from tensorflow.keras.layers import Layer, Lambda
 from tensorflow.keras.utils import get_custom_objects
 
 
+
+def clipped_loss(y_true,y_pred):
+
+	mask = K.cast(K.argmax(y_true) != K.argmax(y_pred), dtype='float32')
+
+	return K.mean(categorical_crossentropy(y_true,y_pred,from_logits=True) * mask)
+
+
 class UniformNoise(Layer):
 	def __init__(self, maxval):
 		super(UniformNoise, self).__init__()
@@ -28,6 +36,7 @@ class GeneratorModel():
 
 	def __init__(self, processors, dtypes, n_latent, n_neurons, n_layers, model_path):
 
+		self._optimizer = Adam(0.0002)
 		self.generator = self._compile_generator(processors, dtypes, n_latent, n_neurons, n_layers)
 		self.discriminator = self._compile_discriminator(processors, dtypes, n_latent, n_neurons, n_layers)
 		if dtypes['targets']:
@@ -78,7 +87,49 @@ class GeneratorModel():
 
 		return generator
 
+	
+	# def _compile_generator(self, processors, dtypes, n_latent, n_neurons, n_layers):
 		
+	# 	model_name = 'generator'
+	# 	batchnorm = 'moderate'
+
+	# 	inputs = {}
+	# 	outputs = {}
+
+	# 	name = 'z'
+	# 	inputs[name] = Input(shape=(n_latent,), name=name)
+	# 	latent_net = inputs[name]
+
+	# 	categorical_nets_base = []
+
+	# 	for name in dtypes['categorical']:
+	# 		n_tokens = processors[name].n_tokens
+	# 		inputs[name] = Input(shape=(n_tokens,), name=name)
+	# 		net = inputs[name]
+	# 		categorical_nets_base.append(net)
+
+	# 	for name in dtypes['numerical'] & dtypes['targets']:
+	# 		inputs[name] = Input(shape=(1,), name=name)
+	# 		net = inputs[name]
+	# 		categorical_nets_base.append(net)
+
+	# 	for name in dtypes['numerical'] & dtypes['features']:
+	# 		if categorical_nets_base:
+	# 			net = self._mask_net(latent_net, categorical_nets_base, n_neurons, batchnorm=batchnorm)
+	# 		else:
+	# 			net = latent_net
+
+	# 		for _ in range(n_layers):
+	# 			net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_normal', batchnorm=batchnorm)
+
+	# 		outputs[name] = Dense(1, activation='tanh', kernel_initializer='glorot_normal', name=name)(net)
+		
+	# 	generator = Model(inputs=inputs, outputs=outputs, name=model_name)
+
+	# 	return generator
+
+
+
 	def _compile_discriminator(self, processors, dtypes, n_latent, n_neurons, n_layers):
 
 		model_name = 'discriminator'
@@ -125,7 +176,7 @@ class GeneratorModel():
 			loss[output_name] = BinaryCrossentropy(from_logits=True)
 
 		discriminator = Model(inputs=inputs, outputs=outputs, name=model_name)
-		discriminator.compile(loss=loss, optimizer=SGD(learning_rate=0.01))
+		discriminator.compile(loss=loss, optimizer=self._optimizer)
 
 		return discriminator
 	
@@ -187,7 +238,7 @@ class GeneratorModel():
 				loss[output_name] = 'mse'
 
 		classifier = Model(inputs=inputs, outputs=outputs, name=model_name)
-		classifier.compile(loss=loss, optimizer=Nadam(clipnorm=2.))
+		classifier.compile(loss=loss, optimizer=Nadam())
 
 		return classifier
 		
@@ -262,8 +313,11 @@ class GeneratorModel():
 				outputs[gan_name] = Lambda(lambda x: x, name = gan_name, output_shape=output.shape)(output)
 				loss[gan_name] = self.classifier.loss[name]
 
+			# for name in dtypes['categorical'] & dtypes['targets']:
+			# 	loss[f'{model_name}.classifier.{name}'] = clipped_loss
+
 		gan = Model(inputs=inputs, outputs=outputs, name=model_name)
-		gan.compile(loss=loss, optimizer=SGD(learning_rate=0.01))
+		gan.compile(loss=loss, optimizer=self._optimizer)
 
 		return gan
 
@@ -279,9 +333,11 @@ class GeneratorModel():
 
 		if batchnorm:
 			if batchnorm == 'slow':
-				net = BatchNormalization(renorm=True, momentum=0.5, renorm_momentum=0.5)(net)
+				net = BatchNormalization()(net)
+				# net = BatchNormalization(renorm=True, momentum=0.5, renorm_momentum=0.5)(net)
 			elif batchnorm == 'moderate':
-				net = BatchNormalization(renorm=True, momentum=0.9, renorm_momentum=0.9)(net)
+				net = BatchNormalization()(net)
+				# net = BatchNormalization(renorm=True, momentum=0.9, renorm_momentum=0.9)(net)
 			else:
 				net = BatchNormalization()(net)
 
@@ -306,9 +362,11 @@ class GeneratorModel():
 
 		if batchnorm:
 			if batchnorm == 'slow':
-				net = BatchNormalization(renorm=True, momentum=0.5, renorm_momentum=0.5)(net)
+				net = BatchNormalization()(net)
+				# net = BatchNormalization(renorm=True, momentum=0.5, renorm_momentum=0.5)(net)
 			elif batchnorm == 'moderate':
-				net = BatchNormalization(renorm=True, momentum=0.9, renorm_momentum=0.9)(net)
+				net = BatchNormalization()(net)
+				# net = BatchNormalization(renorm=True, momentum=0.9, renorm_momentum=0.9)(net)
 			else:
 				net = BatchNormalization()(net)
 

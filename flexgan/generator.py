@@ -1,12 +1,11 @@
 import numpy as np
 import pandas as pd
 
-import matplotlib.pyplot as plt
-
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.utils import to_categorical
 import tensorflow.keras.backend as K
+from tensorflow.keras.optimizers import SGD
 
 from dataclasses import dataclass
 
@@ -75,7 +74,7 @@ class DataGenerator():
 		return
 
 
-	def train(self, batch_size=1024, patience=2000, eval_freq=500, n_plot=2000):
+	def train(self, batch_size=1024, patience=2000):
 
 		"""
 		Function for training synthetic data generator model.
@@ -91,43 +90,55 @@ class DataGenerator():
 		"""
 
 		if self._dtypes['targets']:
-			print('Training classifier... ')
-
 			self._train_classifier(batch_size, patience)
-
-		print('Training data generator...')
-
 
 		n_batches = int(np.ceil(self._n_samples / (batch_size * 4)))
 
-		epoch = 0
-		loss = 0
-		best_loss = np.inf
-		best_weights = None
+		for epoch in range(patience):
+			generator_loss = self._train_epoch(batch_size, n_batches)
+		
+		current_weights = self._model.gan.get_weights()
+		self._weights_sum = current_weights
+		self._weights_sum_squared = [w**2 for w in current_weights]
+		
+		optimizer = SGD(0.01)
+		self._model.discriminator.trainable = True
+		self._model.discriminator.compile(loss=self._model.discriminator.loss, optimizer=optimizer)
+		self._model.discriminator.trainable = False
+		self._model.gan.compile(loss=self._model.gan.loss, optimizer=optimizer)
 
 		learning_rate_schedule = .1**np.linspace(2,3,patience)
 
+		epoch = 0
+
+		best_std = np.inf
 		while True:
-			learning_rate = learning_rate_schedule[epoch%2000]
-			K.set_value(self._model.discriminator.optimizer.learning_rate, learning_rate)
+			learning_rate = learning_rate_schedule[epoch%patience]
 			K.set_value(self._model.gan.optimizer.learning_rate, learning_rate)
 
-			loss = self._train_epoch(batch_size, n_batches)
+			self._train_epoch(batch_size, n_batches)
 
-			if (epoch + 1) % 2000 == 0:
-				if loss < best_loss:
-					best_loss = loss
-					best_weights = self._model.gan.get_weights()
+			current_weights = self._model.gan.get_weights()
+			weights_sum = [aw + cw for aw,cw in zip(weights_sum, current_weights)]
+			weights_sum_squared = [aws + cw**2 for aws,cw in zip(weights_sum_squared, current_weights)]
 
-				else:
-					self._model.gan.set_weights(best_weights)
-					return
-			
 			epoch += 1
-		
-		print('Training complete.')
 
-		return
+			if epoch % patience == 0:
+				average_weights = np.hstack([w.flatten() for w in weights_sum])/patience
+				average_squared_weights = np.hstack([w.flatten() for w in weights_sum_squared])/patience
+				average_std = np.mean(np.sqrt(np.max(average_squared_weights - average_weights**2, 0)))
+
+				self._model.gan.set_weights([w/patience for w in weights_sum])
+
+				if average_std < best_std:
+					best_std = average_std
+				else:
+					return
+
+				current_weights = self._model.gan.get_weights()
+				weights_sum = current_weights
+				weights_sum_squared = [w**2 for w in current_weights]
 
 
 	def generate_data(self, n_samples=None, to_csv=None):
@@ -313,28 +324,9 @@ class DataGenerator():
 	def _train_classifier(self, batch_size, patience):
 
 		x_train, y_train, x_test, y_test = self._get_classifier_data()
-		early_stop = EarlyStopping(monitor='val_loss', min_delta=0.01, patience=500, verbose=0, mode='auto', baseline=None, restore_best_weights=True)
+		early_stop = EarlyStopping(monitor='val_loss', min_delta=0.01, patience=patience, verbose=0, mode='auto', baseline=None, restore_best_weights=True)
 		self._model.classifier.fit(x=x_train, y=y_train, batch_size=batch_size, validation_data=(x_test, y_test), epochs=1000000, verbose=0, callbacks=[early_stop])
 		self._model.classifier.evaluate(x=x_test, y=y_test)
-
-		return
-
-
-	def _discriminator_batch_generator(self, batch_size):
-
-		while True:
-			x, y = self._get_discriminator_batch(batch_size)
-
-			yield x, y
-
-
-	def _train_discriminator(self, batch_size, n_batches, patience):
-
-		early_stop = EarlyStopping(monitor='loss', min_delta=0.01, patience=500, verbose=0, mode='auto', baseline=None, restore_best_weights=True)
-		self._model.discriminator.fit(x=self._discriminator_batch_generator(batch_size),steps_per_epoch=n_batches, epochs=1000000, verbose=0,
-			callbacks=[early_stop])
-		x, y = self._get_discriminator_batch(batch_size)
-		self._model.discriminator.evaluate(x=x, y=y)
 
 		return
 
@@ -346,7 +338,7 @@ class DataGenerator():
 		x = {}
 		y = {}
 
-		z_shape = (n//2, self._n_latent,)
+		z_shape = (int(np.ceil(n/2)), self._n_latent,)
 
 		if distribution == 'standard':
 			z = tf.random.normal(z_shape, mean=0.0, stddev=1.0).numpy()
@@ -357,7 +349,7 @@ class DataGenerator():
 		z = np.vstack([z,-z])
 		np.random.shuffle(z)
 
-		x['z'] = z
+		x['z'] = z[:n]
 
 		for name in self._dtypes['numerical']:
 			x[name] = self._data[name][self._choice]
@@ -381,7 +373,7 @@ class DataGenerator():
 
 		discrimination = np.ones(shape=(n,1))
 		y['gan.discriminator.discrimination.real'] = discrimination
-		y['gan.discriminator.discrimination.synthetic'] = discrimination * 0.5
+		y['gan.discriminator.discrimination.synthetic'] = 1.5-discrimination
 		y['gan.discriminator.discrimination'] = y['gan.discriminator.discrimination.real']
 		return x, y
 		
@@ -400,10 +392,9 @@ class DataGenerator():
 		for name in self._dtypes['categorical']:
 			x[name] = latent_x[name]
 
-		discrimination = np.ones(shape=(n,1))
-
-		y['discriminator.discrimination.real'] = discrimination * 0.5
-		y['discriminator.discrimination.synthetic'] = discrimination
+		discrimination = np.zeros(shape=(n,1))
+		y['discriminator.discrimination.real'] = discrimination+0.5
+		y['discriminator.discrimination.synthetic'] = 1-discrimination
 		y['discriminator.discrimination'] = y['discriminator.discrimination.real']
 
 		return x, y
@@ -446,7 +437,7 @@ class DataGenerator():
 
 		discrimination = np.ones(shape=(n,1))
 		y['discriminator.discrimination.real'] = discrimination
-		y['discriminator.discrimination.synthetic'] = discrimination * 0.5
+		y['discriminator.discrimination.synthetic'] = 1.5 - discrimination
 		y['discriminator.discrimination'] = y['discriminator.discrimination.real']
 
 		return x, y
@@ -468,7 +459,7 @@ class DataGenerator():
 		return x, y
 
 
-	def _train_batch(self, batch_size):
+	def _train_batch(self, batch_size, test=True):
 
 		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size)
 		x_generator, y_generator = self._get_generator_batch(batch_size)
@@ -490,12 +481,12 @@ class DataGenerator():
 		x_generator, y_generator = self._get_generator_batch(batch_size)
 		self._model.gan.train_on_batch(x_generator, y_generator)
 
-		x_generator, y_generator = self._get_generator_batch(batch_size)
-		loss = self._model.gan.test_on_batch(x_generator, y_generator)
-
-		return loss[0]
+		return
 
 
 	def _train_epoch(self, batch_size, n_batches):
 
-		return np.mean([self._train_batch(batch_size) _ in range(n_batches)])
+		for _ in range(n_batches):
+			self._train_batch(batch_size, test=test)
+
+		return
