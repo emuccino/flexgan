@@ -2,13 +2,13 @@ from distutils.core import setup
 setup(
   name = 'flexgan',
   packages = ['flexgan'],
-  version = '0.1.1',
+  version = '0.1.2',
   license='MIT',
   description = 'The FlexGAN library provides autonomous synthetic data generation for structured data sets.',
   author = 'Eric Muccino',
   author_email = 'emuccino@mindboard.com',
   url = 'https://github.com/emuccino/flexgan',
-  download_url = 'https://github.com/emuccino/flexgan/archive/v0.1.1.tar.gz',
+  download_url = 'https://github.com/emuccino/flexgan/archive/v0.1.2.tar.gz',
   keywords = ['SYNTHETIC', 'DATA', 'GENERATION','GENERATE','GENERATIVE'],
   install_requires=[
           'numpy',
