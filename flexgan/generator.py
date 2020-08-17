@@ -51,7 +51,7 @@ def generator(*args, **kwargs):
 class DataGenerator():
 
 	def __init__(self, dataframe=None, target_names=None, numerical_names=None, categorical_names=None,
-		csv_path=None, n_latent=16, n_neurons=64, n_layers=4, model_path=None):
+		csv_path=None, n_latent=16, n_neurons=128, n_layers=4, model_path=None):
 
 		if csv_path:
 			dataframe = pd.read_csv(csv_path)
