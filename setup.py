@@ -8,7 +8,7 @@ setup(
   author = 'Eric Muccino',
   author_email = 'emuccino@mindboard.com',
   url = 'https://github.com/emuccino/flexgan',
-  download_url = 'https://github.com/emuccino/flexgan/archive/v0.1.tar.gz',
+  download_url = 'https://github.com/emuccino/flexgan/archive/v0.1.1.tar.gz',
   keywords = ['SYNTHETIC', 'DATA', 'GENERATION','GENERATE','GENERATIVE'],
   install_requires=[
           'numpy',
