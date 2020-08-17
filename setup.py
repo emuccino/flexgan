@@ -8,9 +8,9 @@ setup(
   author = 'Eric Muccino',
   author_email = 'emuccino@mindboard.com',
   url = 'https://github.com/emuccino/flexgan',
-  download_url = 'https://github.com/emuccino/flexgan/archive/0.1.tar.gz',
+  download_url = 'https://github.com/emuccino/flexgan/archive/v0.1.tar.gz',
   keywords = ['SYNTHETIC', 'DATA', 'GENERATION','GENERATE','GENERATIVE'],
-  install_requires=[            # I get to this in a second
+  install_requires=[
           'numpy',
           'pandas',
           'tensorflow',
