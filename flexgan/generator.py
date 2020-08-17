@@ -459,7 +459,7 @@ class DataGenerator():
 		return x, y
 
 
-	def _train_batch(self, batch_size, test=True):
+	def _train_batch(self, batch_size):
 
 		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size)
 		x_generator, y_generator = self._get_generator_batch(batch_size)
@@ -487,6 +487,6 @@ class DataGenerator():
 	def _train_epoch(self, batch_size, n_batches):
 
 		for _ in range(n_batches):
-			self._train_batch(batch_size, test=test)
+			self._train_batch(batch_size)
 
 		return
