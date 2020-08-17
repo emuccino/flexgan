@@ -2,7 +2,7 @@ from distutils.core import setup
 setup(
   name = 'flexgan',
   packages = ['flexgan'],
-  version = '0.1',
+  version = '0.1.1',
   license='MIT',
   description = 'The FlexGAN library provides autonomous synthetic data generation for structured data sets.',
   author = 'Eric Muccino',
