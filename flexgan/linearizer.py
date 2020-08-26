@@ -41,6 +41,8 @@ class Linearizer():
 
         self.scalers = unit_distance / distance
         self.inverse_scalers = 1 / self.scalers
+
+        return self
         
     
     def _map_points(self,arr,space,new_space,scalers):

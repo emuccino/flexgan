@@ -1,21 +1,11 @@
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense,Dropout,BatchNormalization,Layer,Input,Concatenate,Activation,Reshape,Multiply,LeakyReLU,Add
-from tensorflow.keras.optimizers import Nadam,Adam,SGD
-from tensorflow.keras.losses import binary_crossentropy, categorical_crossentropy, MSE, BinaryCrossentropy, CategoricalCrossentropy
-from tensorflow.keras.metrics import BinaryAccuracy
-from tensorflow.keras.activations import sigmoid
-
+from tensorflow.keras.layers import Dense, BatchNormalization, Layer, Input, Concatenate, Activation, LeakyReLU, Add, LayerNormalization, Lambda
+from tensorflow.keras.optimizers import Adam, SGD
+from tensorflow.keras.losses import BinaryCrossentropy, CategoricalCrossentropy
 from tensorflow.keras import backend as K
-from tensorflow.keras.layers import Layer, Lambda
-from tensorflow.keras.utils import get_custom_objects
 
+import os
 
-
-def clipped_loss(y_true,y_pred):
-
-	mask = K.cast(K.argmax(y_true) != K.argmax(y_pred), dtype='float32')
-
-	return K.mean(categorical_crossentropy(y_true,y_pred,from_logits=True) * mask)
 
 
 class UniformNoise(Layer):
@@ -32,15 +22,20 @@ class UniformNoise(Layer):
 		return outputs / K.sum(outputs,axis=-1, keepdims=True)
 
 
-class GeneratorModel():
+class FlexGANModel():
 
 	def __init__(self, processors, dtypes, n_latent, n_neurons, n_layers, model_path):
 
-		self._optimizer = Adam(0.0002)
+		self.n_latent = n_latent
+
+		self._optimizer = SGD()
+
 		self.generator = self._compile_generator(processors, dtypes, n_latent, n_neurons, n_layers)
 		self.discriminator = self._compile_discriminator(processors, dtypes, n_latent, n_neurons, n_layers)
+
 		if dtypes['targets']:
 			self.classifier = self._compile_classifier(processors, dtypes, n_latent, n_neurons, n_layers)
+
 		self.gan = self._compile_gan(processors, dtypes, n_latent, n_neurons, n_layers)
 
 		if model_path:
@@ -48,9 +43,8 @@ class GeneratorModel():
 
 
 	def _compile_generator(self, processors, dtypes, n_latent, n_neurons, n_layers):
-		
+
 		model_name = 'generator'
-		batchnorm = 'moderate'
 
 		inputs = {}
 		outputs = {}
@@ -73,12 +67,12 @@ class GeneratorModel():
 			categorical_nets.append(net)
 
 		if categorical_nets:
-			net = self._mask_net(latent_net, categorical_nets, n_neurons, batchnorm=batchnorm)
+			net = self._mask_net(latent_net, categorical_nets, n_neurons, layernorm=True, kernel_initializer='normal')
 		else:
 			net = latent_net
 
 		for _ in range(n_layers):
-			net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_normal', batchnorm=batchnorm)
+			net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_normal', layernorm=True)
 
 		for name in dtypes['numerical'] & dtypes['features']:
 			outputs[name] = Dense(1, activation='tanh', kernel_initializer='glorot_normal', name=name)(net)
@@ -86,48 +80,6 @@ class GeneratorModel():
 		generator = Model(inputs=inputs, outputs=outputs, name=model_name)
 
 		return generator
-
-	
-	# def _compile_generator(self, processors, dtypes, n_latent, n_neurons, n_layers):
-		
-	# 	model_name = 'generator'
-	# 	batchnorm = 'moderate'
-
-	# 	inputs = {}
-	# 	outputs = {}
-
-	# 	name = 'z'
-	# 	inputs[name] = Input(shape=(n_latent,), name=name)
-	# 	latent_net = inputs[name]
-
-	# 	categorical_nets_base = []
-
-	# 	for name in dtypes['categorical']:
-	# 		n_tokens = processors[name].n_tokens
-	# 		inputs[name] = Input(shape=(n_tokens,), name=name)
-	# 		net = inputs[name]
-	# 		categorical_nets_base.append(net)
-
-	# 	for name in dtypes['numerical'] & dtypes['targets']:
-	# 		inputs[name] = Input(shape=(1,), name=name)
-	# 		net = inputs[name]
-	# 		categorical_nets_base.append(net)
-
-	# 	for name in dtypes['numerical'] & dtypes['features']:
-	# 		if categorical_nets_base:
-	# 			net = self._mask_net(latent_net, categorical_nets_base, n_neurons, batchnorm=batchnorm)
-	# 		else:
-	# 			net = latent_net
-
-	# 		for _ in range(n_layers):
-	# 			net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_normal', batchnorm=batchnorm)
-
-	# 		outputs[name] = Dense(1, activation='tanh', kernel_initializer='glorot_normal', name=name)(net)
-		
-	# 	generator = Model(inputs=inputs, outputs=outputs, name=model_name)
-
-	# 	return generator
-
 
 
 	def _compile_discriminator(self, processors, dtypes, n_latent, n_neurons, n_layers):
@@ -148,10 +100,9 @@ class GeneratorModel():
 			numerical_nets_base.append(net)
 
 		for name in dtypes['categorical']:
-			n_tokens = processors[name].n_tokens
-			inputs[name] = Input(shape=(n_tokens,), name=name)
+			inputs[name] = Input(shape=(processors[name].n_tokens,), name=name)
 			net = inputs[name]
-			net = UniformNoise(0.2/n_tokens)(net)
+			net = UniformNoise(0.2)(net)
 			categorical_nets_base.append(net)
 
 		if len(numerical_nets_base) > 1:
@@ -161,22 +112,22 @@ class GeneratorModel():
 
 		for output_type in ['discrimination.real', 'discrimination.synthetic', 'discrimination']:
 			if categorical_nets_base:
-				net = self._mask_net(numerical_net_base, categorical_nets_base, n_neurons, batchnorm=batchnorm)
+				net = self._mask_net(numerical_net_base, categorical_nets_base, n_neurons, kernel_initializer='uniform')
 			else:
 				net = numerical_net_base
 
 			for _ in range(n_layers):
-				net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_normal', batchnorm=batchnorm)
+				net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_uniform')
 
 			output_name = f'{model_name}.{output_type}'
 			if output_type == 'discrimination':
-				outputs[output_name] = Dense(1, kernel_initializer='he_normal', name=output_name)(net)
+				outputs[output_name] = Dense(1, kernel_initializer='glorot_uniform', name=output_name)(net)
 			else:
-				outputs[output_name] = Dense(1, activation='relu', kernel_initializer='he_normal', name=output_name)(net)
+				outputs[output_name] = Dense(1, activation='relu', kernel_initializer='glorot_uniform', name=output_name)(net)
 			loss[output_name] = BinaryCrossentropy(from_logits=True)
 
 		discriminator = Model(inputs=inputs, outputs=outputs, name=model_name)
-		discriminator.compile(loss=loss, optimizer=self._optimizer)
+		discriminator.compile(loss=loss, optimizer=SGD())
 
 		return discriminator
 	
@@ -198,9 +149,10 @@ class GeneratorModel():
 			numerical_nets_base[name] = inputs[name]
 
 		for name in dtypes['categorical']:
-			n_tokens = processors[name].n_tokens
-			inputs[name] = Input(shape=(n_tokens,), name=name)
-			categorical_nets_base[name] = UniformNoise(0.2/n_tokens)(inputs[name])
+			inputs[name] = Input(shape=(processors[name].n_tokens,), name=name)
+			net = inputs[name]
+			net = UniformNoise(0.2)(net)
+			categorical_nets_base[name] = net
 
 		for name in dtypes['targets']:
 			gate_name = f'gate.{name}'
@@ -216,29 +168,29 @@ class GeneratorModel():
 				numerical_net = numerical_nets[0]
 
 			if categorical_nets:
-				net = self._mask_net(numerical_net, categorical_nets, n_neurons, batchnorm=batchnorm)
+				net = self._mask_net(numerical_net, categorical_nets, n_neurons, kernel_initializer='uniform')
 			else:
 				net = numerical_net
 
 			for _ in range(n_layers):
-				net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_normal', batchnorm=batchnorm)
+				net = self._dense(net, n_neurons, activation='LeakyReLU', kernel_initializer='he_uniform')
 
 			head = net
 
 			gate_name = f'gate.{target}'
 			output_name = f'{model_name}.{target}'
 			if target in dtypes['categorical']:
-				net = Dense(processors[name].n_tokens, kernel_initializer='glorot_normal')(head) * inputs[gate_name]
+				net = Dense(processors[name].n_tokens, kernel_initializer='glorot_uniform')(head) * inputs[gate_name]
 				outputs[output_name] = Lambda(lambda x: x, name = output_name, output_shape=(processors[name].n_tokens,))(net)
 				loss[output_name] = CategoricalCrossentropy(from_logits=True)
 
 			else:
-				net = Dense(1, kernel_initializer='glorot_normal')(head) * inputs[gate_name]
+				net = Dense(1, kernel_initializer='he_uniform')(head) * inputs[gate_name]
 				outputs[output_name] = Lambda(lambda x: x, name = output_name, output_shape=(1,))(net)
 				loss[output_name] = 'mse'
 
 		classifier = Model(inputs=inputs, outputs=outputs, name=model_name)
-		classifier.compile(loss=loss, optimizer=Nadam())
+		classifier.compile(loss=loss, optimizer=Adam())
 
 		return classifier
 		
@@ -313,61 +265,40 @@ class GeneratorModel():
 				outputs[gan_name] = Lambda(lambda x: x, name = gan_name, output_shape=output.shape)(output)
 				loss[gan_name] = self.classifier.loss[name]
 
-			# for name in dtypes['categorical'] & dtypes['targets']:
-			# 	loss[f'{model_name}.classifier.{name}'] = clipped_loss
-
 		gan = Model(inputs=inputs, outputs=outputs, name=model_name)
-		gan.compile(loss=loss, optimizer=self._optimizer)
+		gan.compile(loss=loss, optimizer=SGD())
 
 		return gan
 
 
-	def _dense(self, net, n, activation=None, kernel_initializer='glorot_uniform', batchnorm=None, dropout=None):
+	def _dense(self, net, n, activation=None, kernel_initializer='he_normal', layernorm=False):
 
 		if activation == 'LeakyReLU':
 			net = Dense(n, activation=None, kernel_initializer=kernel_initializer)(net)
-			net = LeakyReLU()(net)
+			net = LeakyReLU(0.1)(net)
 
 		else:
 			net = Dense(n, activation=activation, kernel_initializer=kernel_initializer)(net)
 
-		if batchnorm:
-			if batchnorm == 'slow':
-				net = BatchNormalization()(net)
-				# net = BatchNormalization(renorm=True, momentum=0.5, renorm_momentum=0.5)(net)
-			elif batchnorm == 'moderate':
-				net = BatchNormalization()(net)
-				# net = BatchNormalization(renorm=True, momentum=0.9, renorm_momentum=0.9)(net)
-			else:
-				net = BatchNormalization()(net)
-
-		if dropout:
-			net = Dropout(dropout)(net)
+		net = BatchNormalization()(net)
 
 		return net
 
 
-	def _mask_net(self, numerical_net, categorical_nets, n, batchnorm=None):
+	def _mask_net(self, numerical_net, categorical_nets, n, layernorm=False, kernel_initializer='normal'):
 
-		categorical_nets = [self._dense(net, n, activation='softmax', kernel_initializer='glorot_normal')
+		categorical_nets = [Dense(n, activation='softmax', kernel_initializer='he_'+kernel_initializer)(net)
 			for net in categorical_nets]
 
 		if len(categorical_nets) > 1:
 			categorical_net = Add()(categorical_nets)
 		else:
 			categorical_net = categorical_nets[0]
+		categorical_net = UniformNoise(0.2/n)(categorical_net)
 
-		numerical_net = self._dense(numerical_net, n, activation=None, kernel_initializer='he_normal')
+		numerical_net = Dense(n, activation=None, kernel_initializer='he_'+kernel_initializer)(numerical_net)
+
 		net = numerical_net * categorical_net
-
-		if batchnorm:
-			if batchnorm == 'slow':
-				net = BatchNormalization()(net)
-				# net = BatchNormalization(renorm=True, momentum=0.5, renorm_momentum=0.5)(net)
-			elif batchnorm == 'moderate':
-				net = BatchNormalization()(net)
-				# net = BatchNormalization(renorm=True, momentum=0.9, renorm_momentum=0.9)(net)
-			else:
-				net = BatchNormalization()(net)
+		net = BatchNormalization()(net)
 
 		return net
