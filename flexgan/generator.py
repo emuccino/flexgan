@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
 
+import matplotlib.pyplot as plt
+
 import tensorflow as tf
+
 from tensorflow.keras.utils import to_categorical
 import tensorflow.keras.backend as K
 
@@ -18,19 +21,12 @@ def generator(*args, **kwargs):
 		Args:
 			dataframe (pd.DataFrame): A pandas data frame containing data that will be synthetically modeled.
 				Alternatively, csv_path can be provided.
-			target_names (list): List of target feature names. Specifying target names produces more pronounced
-				decision boundaries within the synthetic data and is helpful when synthetic data is planning to be
-				used for classification or regression tasks.
 			numerical_names (list): List of numerical feature names. Specifying numerical names can help ensure that
 				data is processed appropriately, however it is not required.
 			categorical_names (list): List of categorical feature names. Specifying numerical names can help ensure that
 				data is processed appropriately, however it is not required.
-			n_latent (int): Size of the latent vector space used to sample data. Larger n_latent values generally produce
-				better results but can use more memory and slow down training time. The default is 32. 
-			n_neurons (int): Number of neurons used within layers of the data generator neural networks. Larger n_neurons
-				values generally produce better results but can use more memory and slow down training time. The default is 128.
-			n_layers (int): Number of layers used within layers of the data generator neural networks. Larger n_layers
-				values generally produce better results but can use more memory and slow down training time. The default is 4.
+			resources (int): An value representing the model size and capacity. Larger values generally produce better results
+				but lead to greater memory usage and slower training time. The default is 2.
 			model_path (str): Path to load pretrained data generator model.
 
 		Returns:
@@ -45,28 +41,38 @@ def generator(*args, **kwargs):
 
 class DataGenerator():
 
-	def __init__(self, dataframe=None, target_names=None, numerical_names=None, categorical_names=None,
-		csv_path=None, n_latent=32, n_neurons=128, n_layers=4, model_path=None):
+	def __init__(self, dataframe=None, numerical_names=None, categorical_names=None, csv_path=None, resources=2, model_path=None):
 
 		if csv_path:
 			dataframe = pd.read_csv(csv_path)
 		else:
-			dataframe = pd.DataFrame(dataframe, copy=True)
+			dataframe = pd.DataFrame(dataframe, copy=True).reset_index(drop=True)
 
-		self._columns = dataframe.columns
+		self._original_columns, self._columns, dataframe = self._get_column_names(dataframe)
 		self._n_samples = len(dataframe)
 		self._index = np.arange(self._n_samples)
 
-		self._dtypes = self._get_dtypes(dataframe, numerical_names, categorical_names, target_names)
+		self._dtypes = self._get_dtypes(dataframe, numerical_names, categorical_names)
 		self._processors = self._get_processors(dataframe)
 		self._dataframe = self._setup_dataframe(dataframe)
 
-		self._model = FlexGANModel(self._processors, self._dtypes, n_latent, n_neurons, n_layers, model_path)
+		self._p, self._categorical_index, self._outer_index = self._get_sampling()
+
+		self._model = FlexGANModel(self._processors, self._dtypes, resources, model_path)
 
 		return
 
 
-	def train(self, batch_size=1024, patience=500):
+	def _get_column_names(self, df):
+
+		original_columns = df.columns
+		df = df.rename(columns={name:str(name) for name in df.columns})
+		columns = df.columns
+
+		return original_columns, columns, df
+
+
+	def train(self, batch_size=1024, patience=200, model_path=None, checkpoint=False):
 
 		"""
 		Function for training synthetic data generator model.
@@ -75,38 +81,105 @@ class DataGenerator():
 			batch_size (int): The number of data samples to use in each training batch.
 				Larger batch_size generally produce better results but use more memory. The default is 1024.
 			patience (int): The number of training epochs without improvement to allow before halting training.
-				Larger patience generally produces better results but increases model training time. The default is 500.
+				Larger patience generally produces better results but increases model training time. The default is 200.
+			path (str): Optional path for saving the synthetic data generator model. E.g. 'path/my_flexgan_model.h5'
+			checkpoint (bool): Option for saving periodic checkpoints. Only valid if model_path is provided.
 
 		Returns:
-			None
+			self
 		"""
 
 		batch_size = int(batch_size)
 		patience = int(patience)
 		n_batches = int(np.ceil(self._n_samples / (batch_size * 4)))
+
+		history = []
+
 		best_loss = np.inf
-		epoch = 0
+		worst_loss = -np.inf
+		min_delta = np.inf
 
-		learning_rate_schedule = .1**np.linspace(2,3,patience)
+		base_learning_rate = 0.01
 
-		if self._dtypes['targets']:
-			self._train_classifier(batch_size, patience)
+		for _ in range(2):
+			loss = self._train_epoch(batch_size, n_batches)
+			history.append(loss)
 
 		while True:
-			learning_rate = learning_rate_schedule[epoch%patience]
-			K.set_value(self._model.gan.optimizer.learning_rate, learning_rate)
-			K.set_value(self._model.discriminator.optimizer.learning_rate, learning_rate)
+			wait = 0
+			epoch = 0
 
-			loss = self._train_epoch(batch_size, n_batches)
+			K.set_value(self._model.gan.optimizer.learning_rate, base_learning_rate)
 
-			epoch += 1
-			if epoch % patience == 0:
+			stop = True
+			while True:
+				loss = self._train_epoch(batch_size, n_batches)
+				history.append(loss)
+				epoch += 1
+
+				delta = (history[-2] - history[-3]) * (history[-1] - history[-2])
+
 				if loss < best_loss:
-					best_loss = loss
 					weights = self._model.gan.get_weights()
+
+				if (loss < best_loss * 0.99) or (loss > worst_loss) or (delta < min_delta):
+					if loss < best_loss * 0.99:
+						best_loss = loss
+
+						if model_path and checkpoint:
+							self.save_model(model_path)
+
+					if loss > worst_loss:
+						worst_loss = loss
+						best_loss = np.inf
+
+					if delta < min_delta:
+						min_delta = delta
+						best_loss = np.inf
+
+					wait = 0
+					stop = False
+
 				else:
-					self._model.gan.set_weights(weights)
-					return
+					wait += 1
+
+				if wait == patience:
+					break
+					
+			if stop:
+				self._model.gan.set_weights(weights)
+				if model_path:
+					self.save_model(model_path)
+
+				return self
+
+			learning_rate_schedule = np.exp(np.linspace(np.log(base_learning_rate),np.log(base_learning_rate/2),patience))
+
+			for epoch in range(patience):
+				learning_rate = learning_rate_schedule[epoch]
+				K.set_value(self._model.gan.optimizer.learning_rate, learning_rate)
+
+				loss = self._train_epoch(batch_size, n_batches)
+				history.append(loss)
+
+				delta = (history[-2] - history[-3]) * (history[-1] - history[-2])
+
+				if (loss < best_loss) or (loss > worst_loss) or (delta < min_delta):
+					if loss < best_loss:
+						weights = self._model.gan.get_weights()
+						best_loss = loss
+						if model_path and checkpoint:
+							self.save_model(model_path)
+
+					if loss > worst_loss:
+						worst_loss = loss
+						best_loss = np.inf
+
+					if delta < min_delta:
+						min_delta = delta
+						best_loss = np.inf
+
+			base_learning_rate = base_learning_rate/2
 
 
 	def generate_data(self, n_samples=None, class_labels=None, to_csv=None):
@@ -118,8 +191,8 @@ class DataGenerator():
 			n_samples (int): The number of data samples to generate. If None, generated sample count will be the
 				equal to the original data sample count, or if. n_samples will be ignored if class_labels are supplied.
 				samples as is in the original data. 
-			class_labels (dict): A dictionary-like object (e.g. pandas.DataFrame) that contains categorical and/or target labels
-				for custom class label distributions within generated data. If None, categorical and target values are randomly
+			class_labels (dict): A dictionary-like object (e.g. pandas.DataFrame) that contains categorical labels
+				for custom class label distributions within generated data. If None, categorical labels are randomly
 				drawn from the original class label distribution.
 			to_csv (str): Path and filename to save synthetic data as csv. (optional)
 
@@ -128,19 +201,20 @@ class DataGenerator():
 		"""
 
 		if class_labels is not None:
+			class_labels = pd.DataFrame(class_labels, copy=True)
 			self._verify_class_labels(class_labels)
-			class_labels = self._preprocess(pd.DataFrame(class_labels, copy=True))
+			class_labels = self._preprocess(class_labels)
 			n_samples = len(class_labels)
 
 		elif not n_samples:
 			n_samples = self._n_samples
 
-		data, _ = self._get_synthetic_samples(n_samples, class_labels=class_labels)
+		data, _ = self._get_synthetic_samples(n_samples, class_labels=class_labels, distribution='truncated')
 
 		df = self._to_dataframe(data)
 		df = self._apply_gates(df)
 		df = self._postprocess(df)
-		df = df[self._columns]
+		df = df[self._columns].rename(columns={str(name):name for name in self._original_columns})
 
 		if to_csv:
 			df.to_csv(to_csv, index=False)
@@ -148,126 +222,87 @@ class DataGenerator():
 		return df
 
 
-	def save_model(self,path):
+	def save_model(self, model_path):
 		
 		"""
 		Function for saving a trained synthetic data generator model for future use.
 
 		Args:
-			path (str): Path and file name to save the synthetic data generator model. E.g. 'path/my_flexgan_model.h5'
+			model_path (str): Path and file name to save the synthetic data generator model. E.g. 'path/my_flexgan_model.h5'
 
 		Returns:
 			None
 		"""
 
-		self._model.gan.save_weights(path)
+		self._model.gan.save_weights(model_path)
 
 		return
 
 
-	def _get_classifier_data(self):
+	def _interpolate(self, data_list, n):
 
-		np.random.shuffle(self._index)
-		n_train = int(self._n_samples * .8)
+		p = self._p[self._choice]
+		categorical_index = self._categorical_index[self._choice]
+		outer_index = self._outer_index.iloc[self._choice]
 
-		x_train = {}
-		y_train = {}
+		indx = np.arange(n)
+		interp_indx = np.zeros(n, dtype=int)
 
-		x_test = {}
-		y_test = {}
+		for c in set(categorical_index):
+			c_indx = categorical_index == c
+			i_indx = c_indx | outer_index[c]
+			options = indx[i_indx]
 
-		for indx, (x, y) in zip([slice(0,n_train), slice(n_train,self._n_samples)], [(x_train, y_train), (x_test, y_test)]):
+			interp_indx[c_indx] = np.random.choice(options, size=sum(c_indx), replace=False, p=p[i_indx]/p[i_indx].sum())
 
-			for name in self._dtypes['numerical']:
-				values = self._dataframe[[name]].iloc[self._index[indx]]
-				x[name] = values
+		indxs = np.stack([indx, interp_indx], axis=-1)
+		betas = np.expand_dims(np.random.dirichlet((1., 1.), size=n), axis=-1)
 
-				if name in self._dtypes['targets']:
-					output_name = f'classifier.{name}'
-					y[output_name] = values
-					
-					gate_name = f'gate.{name}'
-					x[gate_name] = self._dataframe[[gate_name]].iloc[self._index[indx]]
+		interpolated_data = [{name: (betas * values[indxs]).sum(1) for name, values in data.items()} for data in data_list]
 
-			for name in self._dtypes['categorical']:
-				values = to_categorical(self._dataframe[[name]].iloc[self._index[indx]], num_classes=self._processors[name].n_tokens+1)[:,1:]
-				x[name] = values
-
-				if name in self._dtypes['targets']:
-					output_name = f'classifier.{name}'
-					y[output_name] = values
-
-					gate_name = f'gate.{name}'
-					x[gate_name] = self._dataframe[[gate_name]].iloc[self._index[indx]]
-
-		for name in self._dtypes['categorical'] & self._dtypes['targets']:
-			output_name = f'classifier.{name}'
-			y_train[output_name] = self._smooth(y_train[output_name], name)
-
-		return x_train, y_train, x_test, y_test
+		return interpolated_data
 
 
-	def _smooth(self, values, name):
-
-		n_tokens = self._processors[name].n_tokens
-		smoothing_limit = n_tokens / (10 * (n_tokens - 1))
-		random_smoothing = np.random.uniform(high=smoothing_limit, low=0.,size=(len(values),1))
-		smoothed_values = values * (1.0 - random_smoothing) + (random_smoothing / n_tokens)
-
-		return smoothed_values
-
-
-	def _train_classifier(self, batch_size, patience):
-
-		x_train, y_train, x_test, y_test = self._get_classifier_data()
-		early_stop = CustomEarlyStopping(monitor='val_loss', min_delta=0.01, patience=patience, verbose=0,
-			mode='auto', baseline=None, restore_best_weights=True)
-		self._model.classifier.fit(x=x_train, y=y_train, batch_size=batch_size, validation_data=(x_test, y_test),
-			epochs=1000000, verbose=0, callbacks=[early_stop])
-
-		return
-
-
-	def _get_generator_batch(self, n, distribution='standard'):
+	def _get_generator_batch(self, n, distribution='standard', p=None, interpolate=False):
 
 		x = {}
 		y = {}
 
-		self._choice = np.random.choice(self._index,size=n, replace=True)
-		dataframe = self._dataframe.iloc[self._choice]
+		self._choice = np.hstack([np.random.choice(self._index, size=self._n_samples, replace=False, p=p)
+							for _ in range(n//self._n_samples)] + [np.random.choice(self._index, size=n%self._n_samples, replace=False, p=p)])
+
+		df = self._dataframe.iloc[self._choice]
 
 		z_shape = (int(np.ceil(n/2)), self._model.n_latent,)
 
 		if distribution == 'standard':
-			z = tf.random.normal(z_shape, mean=0.0, stddev=1.0).numpy()
+			z = tf.random.normal(z_shape, mean=0.0, stddev=1.0, dtype='float32').numpy()
 
 		elif distribution == 'truncated':
-			z = tf.random.truncated_normal(z_shape, mean=0.0, stddev=1.0).numpy()
+			z = tf.random.truncated_normal(z_shape, mean=0.0, stddev=1.0, dtype='float32').numpy()
 		
 		z = np.vstack([z,-z])
 		np.random.shuffle(z)
 
 		x['z'] = z[:n]
 
-		x.update({name:dataframe[[name]].values for name in set(dataframe.columns) - self._dtypes['categorical']})
-		x.update({name:to_categorical(dataframe[name], num_classes=self._processors[name].n_tokens+1)[:,1:] for name in self._dtypes['categorical']})
+		x.update({name:df[[name]].values for name in set(dataframe.columns) - self._dtypes['categorical']})
+		x.update({name:to_categorical(df[name], num_classes=self._processors[name].n_tokens+1)[:,1:] for name in self._dtypes['categorical']})
 
-		y.update({f'gan.classifier.{name}':x[name] for name in self._dtypes['targets']})
+		y['gan.discriminator.discrimination'] = np.ones(shape=(n,1))
 
-		discrimination = np.ones(shape=(n,1))
-		y['gan.discriminator.discrimination.real'] = discrimination
-		y['gan.discriminator.discrimination.synthetic'] = 1.5 - discrimination
-		y['gan.discriminator.discrimination'] = discrimination
+		if interpolate:
+			x, y = self._interpolate([x, y], n)		
 
 		return x, y
 		
 	
-	def _get_synthetic_samples(self, n, distribution='standard', class_labels=None):
+	def _get_synthetic_samples(self, n, distribution='standard', class_labels=None, p=None):
 		
 		x = {}
 		y = {}
 
-		latent_x, _  = self._get_generator_batch(n, distribution=distribution)
+		latent_x, _  = self._get_generator_batch(n, distribution=distribution, p=p)
 		x.update({name:latent_x[name] for name in self._model.discriminator.input_names if name in latent_x})
 
 		generator_input = {name:latent_x[name] for name in self._model.generator.input_names}
@@ -277,12 +312,9 @@ class DataGenerator():
 			generator_input.update({name:to_categorical(values, num_classes=self._processors[name].n_tokens+1)[:,1:] for name,values in class_labels.items() if name in self._dtypes['categorical']})
 			x.update(generator_input)
 
-		x.update(self._model.generator(generator_input))
+		x.update({name:values.numpy() for name, values in self._model.generator(generator_input).items()})
 
-		discrimination = np.ones(shape=(n,1))
-		y['discriminator.discrimination.real'] = 1.5 - discrimination
-		y['discriminator.discrimination.synthetic'] = discrimination
-		y['discriminator.discrimination'] = 1 - discrimination
+		y['discriminator.discrimination'] = np.zeros(shape=(n,1))
 
 		return x, y
 
@@ -292,66 +324,69 @@ class DataGenerator():
 		x = {}
 		y = {}
 
-		self._choice = np.random.choice(self._index,size=n, replace=True)
-		dataframe = self._dataframe.iloc[self._choice]
+		df = self._dataframe.iloc[self._choice]
 
-		x.update({name:dataframe[[name]].values for name in self._dtypes['numerical']})
-		x.update({name:to_categorical(dataframe[name], num_classes=self._processors[name].n_tokens+1)[:,1:] for name in self._dtypes['categorical']})
+		x.update({name:df[[name]].values for name in self._dtypes['numerical']})
+		x.update({name:to_categorical(df[name], num_classes=self._processors[name].n_tokens+1)[:,1:] for name in self._dtypes['categorical']})
 
-		discrimination = np.ones(shape=(n,1))
-		y['discriminator.discrimination.real'] = discrimination
-		y['discriminator.discrimination.synthetic'] = 1.5 - discrimination
-		y['discriminator.discrimination'] = discrimination
+		y['discriminator.discrimination'] = np.ones(shape=(n,1))
 
 		return x, y
 
 
-	def _get_discriminator_batch(self, batch_size, distribution='standard'):
+	def _get_discriminator_batch(self, batch_size, p=None):
 
 		x = {}
 		y = {}
 
-		x_synthetic, y_synthetic = self._get_synthetic_samples(batch_size//2, distribution=distribution)
-		x_real, y_real = self._get_real_samples(batch_size//2)
+		half_batch = batch_size//2
 
-		for key in x_real.keys():
-			x[key] = np.vstack([x_synthetic[key], x_real[key]])
-		for key in y_real.keys():
-			y[key] = np.vstack([y_synthetic[key], y_real[key]])
+		x_synthetic, y_synthetic = self._get_synthetic_samples(half_batch, p=p)
+		x_real, y_real = self._get_real_samples(half_batch)
+
+		x_synthetic, y_synthetic, x_real, y_real = self._interpolate([x_synthetic, y_synthetic, x_real, y_real],
+			half_batch)
+
+		for name in x_real.keys():
+			x[name] = np.vstack([x_synthetic[name], x_real[name]])
+		for name in y_real.keys():
+			y[name] = np.vstack([y_synthetic[name], y_real[name]])
 
 		return x, y
 
 
 	def _train_batch(self, batch_size):
 
+		p = self._p
+
 		loss_batch = []
 
-		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size)
-		x_generator, y_generator = self._get_generator_batch(batch_size)
+		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size, p=p)
+		x_generator, y_generator = self._get_generator_batch(batch_size, p=p, interpolate=True)
 		self._model.gan.train_on_batch(x_generator, y_generator)
 		self._model.discriminator.train_on_batch(x_discriminator, y_discriminator)
 
-		x_generator, y_generator = self._get_generator_batch(batch_size)
+		x_generator, y_generator = self._get_generator_batch(batch_size, p=p, interpolate=True)
 		loss = self._model.gan.train_on_batch(x_generator, y_generator)
-		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size)
+		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size, p=p)
 		self._model.discriminator.train_on_batch(x_discriminator, y_discriminator)
-		loss_batch.append(loss[0])
+		loss_batch.append(loss)
 
-		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size)
-		x_generator, y_generator = self._get_generator_batch(batch_size)
+		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size, p=p)
+		x_generator, y_generator = self._get_generator_batch(batch_size, p=p, interpolate=True)
 		loss = self._model.gan.train_on_batch(x_generator, y_generator)
 		self._model.discriminator.train_on_batch(x_discriminator, y_discriminator)
-		loss_batch.append(loss[0])
+		loss_batch.append(loss)
 
-		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size)
+		x_discriminator, y_discriminator = self._get_discriminator_batch(batch_size, p=p)
 		self._model.discriminator.train_on_batch(x_discriminator, y_discriminator)
-		x_generator, y_generator = self._get_generator_batch(batch_size)
+		x_generator, y_generator = self._get_generator_batch(batch_size, p=p, interpolate=True)
 		loss = self._model.gan.train_on_batch(x_generator, y_generator)
-		loss_batch.append(loss[0])
+		loss_batch.append(loss)
 
-		x_generator, y_generator = self._get_generator_batch(batch_size)
+		x_generator, y_generator = self._get_generator_batch(batch_size, p=p)
 		loss = self._model.gan.test_on_batch(x_generator, y_generator)
-		loss_batch.append(loss[0])
+		loss_batch.append(loss)
 
 		loss = np.mean(loss_batch)
 
@@ -371,12 +406,10 @@ class DataGenerator():
 		return loss
 
 
-	def _get_dtypes(self, df, numerical_names, categorical_names, target_names):
+	def _get_dtypes(self, df, numerical_names, categorical_names):
 
 		dtypes = {'numerical': none_to_set(numerical_names),
-				  'categorical': none_to_set(categorical_names),
-				  'features': set(),
-				  'targets': none_to_set(target_names)}
+				  'categorical': none_to_set(categorical_names)}
 
 		self._verify_columns(df, dtypes)
 
@@ -388,17 +421,10 @@ class DataGenerator():
 				else:
 					dtypes['categorical'].update({name})
 
-			if name not in dtypes['targets']:
-				dtypes['features'].update({name})
-
 		return dtypes
 
 
 	def _verify_columns(self, df, dtypes):
-
-		for name in dtypes['targets']:
-			if not name in df:
-				raise ColumnNotFound(f'{name} is given as a target column name but is not found in the data.')
 
 		for name in dtypes['numerical']:
 			if not name in df:
@@ -414,9 +440,8 @@ class DataGenerator():
 	def _verify_class_labels(self, class_labels):
 
 		for name in class_labels:
-			if not name in self._dtypes['categorical'] | self._dtypes['targets']:
-				raise ColumnNotFound(f"""{name} is given as a class label column name but is not a valid categorical \
-							or target feature name. Valid categorical and target name are: {list(dtypes['categorical'] | dtypes['targets'])}""")
+			if not name in self._dtypes['categorical']:
+				raise ColumnNotFound(f"""{name} is given as a class label column name but is not a valid categorical.\nValid categorical names are: {list(self._dtypes['categorical'])}""")
 
 		return
 
@@ -468,7 +493,6 @@ class DataGenerator():
 		processed_df = self._preprocess(df)
 		processed_df = processed_df.reset_index(drop=True)
 
-
 		return processed_df
 
 
@@ -517,3 +541,32 @@ class DataGenerator():
 		processed_df = df.apply(self._apply_postprocess)
 
 		return processed_df
+
+
+	def _get_sampling(self):
+
+		if self._dtypes['categorical']:
+			df = self._dataframe.copy()
+
+			df['count'] = 1
+			p = df.drop(columns=['count']).merge((1 / np.sqrt(df.groupby(list(self._dtypes['categorical'])).count()['count'])).reset_index(), how='left')['count'].values
+			p = p/p.sum()
+
+			categories_df = df[list(self._dtypes['categorical'])].drop_duplicates()
+			categories_df['__flexgan_categories__'] = np.arange(len(categories_df))
+
+			df = df.merge(categories_df, how='left')[list(self._dtypes['categorical'])+['__flexgan_categories__']]
+
+			categorical_index = df['__flexgan_categories__'].values
+
+			outer_index = pd.DataFrame({c:(df[df['__flexgan_categories__'] == c].iloc[0] != df).all(1).values for c in df['__flexgan_categories__']})
+
+		else:
+			p = np.ones(self._n_samples)
+			p = p/p.sum()
+
+			categorical_index = np.zeros(self._n_samples)
+
+			outer_index = pd.DataFrame({0:np.full(self._n_samples, True)})
+
+		return p, categorical_index, outer_index

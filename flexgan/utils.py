@@ -1,28 +1,20 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.callbacks import EarlyStopping
 
 from .linearizer import Linearizer
-
-
-
-def none_to_set(x):
-
-	if not x:
-		return set()
-	else:
-		return set(x)
 
 
 class NumericalProcessor():
 
 	def __init__(self, name, series):
 
-		data = series.to_numpy(copy=True)
-
+		self.type = 'numerical'
 		self._name = name
-		self._scaler = self._get_scaler(data)
+		self._dtype = series.dtype
+
+		data = series.to_numpy(copy=True)
+		self._scaler, self.noise = self._get_scaler(data)
 		self._linearizer = self._get_linearizer(data)
 
 
@@ -33,10 +25,12 @@ class NumericalProcessor():
 		unbounded = ((values == values.min()).sum() == 1, (values == values.max()).sum() == 1)
 		delta = 2 / len(values)
 
+		noise = 1 / len(values)
+
 		scaler = MinMaxScaler(feature_range=((delta*unbounded[0])-1, 1-(delta*unbounded[1])), copy=True)
 		scaler.fit(data.reshape(-1,1))
 
-		return scaler
+		return scaler, noise
 
 
 	def _get_linearizer(self, data):
@@ -68,7 +62,7 @@ class NumericalProcessor():
 		data = series.to_numpy()
 		data = self._scaler.inverse_transform(data.reshape(-1,1))
 		data = self._linearizer.inverse_transform(data.flatten())
-		series = pd.Series(data, name=self._name)
+		series = pd.Series(data, name=self._name, dtype=self._dtype)
 
 		return series
 
@@ -78,6 +72,8 @@ class CategoricalProcessor():
 
 	def __init__(self, name, series):
 
+		self.type = 'categorical'
+
 		self._name = name
 		self._dtype = series.dtype
 
@@ -85,6 +81,7 @@ class CategoricalProcessor():
 			
 		self._tokenizer = self._get_tokenizer(series)
 		self.n_tokens = len(self._tokenizer)
+		self.noise = 1./self.n_tokens
 
 
 	def _get_tokenizer(self, series):
@@ -116,51 +113,16 @@ class CategoricalProcessor():
 class Error(Exception):
 	pass
 
+
+
 class ColumnNotFound(Error):
 	pass
 
 
 
-class CustomEarlyStopping(EarlyStopping):
+def none_to_set(x):
 
-	def __init__(self, **kwargs):
-		
-		super(CustomEarlyStopping, self).__init__(**kwargs)
-
-
-	def on_train_begin(self, logs=None):
-		# Allow instances to be re-used
-		self.wait = 0
-		self.stopped_epoch = 0
-		if self.baseline is not None:
-			self.best = self.baseline
-		else:
-			self.best = np.Inf if self.monitor_op == np.less else -np.Inf
-		self.worst = np.Inf if self.monitor_op == np.greater else -np.Inf
-		self.best_weights = None
-
-
-	def on_epoch_end(self, epoch, logs=None):
-		current = self.get_monitor_value(logs)
-		if current is None:
-			return
-
-		if self.monitor_op(current - self.min_delta, self.best):
-			self.best = current
-			self.wait = 0
-			if self.restore_best_weights:
-				self.best_weights = self.model.get_weights()
-		else:
-			self.wait += 1
-			if self.wait >= self.patience:
-				self.stopped_epoch = epoch
-				self.model.stop_training = True
-				if self.restore_best_weights:
-					if self.verbose > 0:
-						print('Restoring model weights from the end of the best epoch.')
-					self.model.set_weights(self.best_weights)
-
-		if self.monitor_op(self.worst, current + self.min_delta):
-			self.best = np.Inf if self.monitor_op == np.less else -np.Inf
-			self.worst = current
-			self.wait = 0
+	if not x:
+		return set()
+	else:
+		return set(x)
