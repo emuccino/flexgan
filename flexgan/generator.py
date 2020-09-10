@@ -286,7 +286,7 @@ class DataGenerator():
 
 		x['z'] = z[:n]
 
-		x.update({name:df[[name]].values for name in set(dataframe.columns) - self._dtypes['categorical']})
+		x.update({name:df[[name]].values for name in set(df.columns) - self._dtypes['categorical']})
 		x.update({name:to_categorical(df[name], num_classes=self._processors[name].n_tokens+1)[:,1:] for name in self._dtypes['categorical']})
 
 		y['gan.discriminator.discrimination'] = np.ones(shape=(n,1))
