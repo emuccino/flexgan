@@ -1,3 +1,5 @@
+[flexlake.io](https://flexlake.io/) colab notebook for an example.
+
 ## Description
 
 FlexGAN is a Python library for automated synthetic relational data generation that models user provided sample data.
@@ -26,9 +28,11 @@ my_generator.save_model('my_flexgan_model.h5') # Specify path location to save a
 my_generator = flex.generator(csv_path='my_data.csv', model_path='my_flexgan_model.h5') # Import a pretrained model to generate data.
 ```
 
+Check out [this](https://colab.research.google.com/github/emuccino/flexgan/blob/master/flexgan_demo.ipynb) colab notebook for an example.
+
 ## Questions or Suggestions
 
 Please reach out if you have any questions, suggestions, or would like to contribute to the project.
 
 email: emuccino@mindboard.com
-LinkedIn: https://www.linkedin.com/in/emuccino/
+LinkedIn: [www.linkedin.com/in/emuccino/](https://www.linkedin.com/in/emuccino/)
