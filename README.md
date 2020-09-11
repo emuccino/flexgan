@@ -24,15 +24,20 @@ scipy
 ```python
 import flexgan as flex
 
-my_generator = flex.generator(csv_path='my_data.csv') # Initialize flexgan by providing sample data either as a pandas.DataFrame or a csv file path location.
+# Initialize flexgan by providing sample data either as a pandas.DataFrame or a csv file path location.
+my_generator = flex.generator(csv_path='my_data.csv')
 
-my_generator.train() # Train synthetic data generation model.
+# Train synthetic data generation model.
+my_generator.train()
 
-my_generator.generate_data(to_csv='my_synthetic_data.csv') # Generate synthetic data by optionally specifying sample count and csv file path locaiton.
+# Generate synthetic data by optionally specifying sample count and csv file path locaiton.
+my_generator.generate_data(to_csv='my_synthetic_data.csv')
 
-my_generator.save_model('my_flexgan_model.h5') # Specify path location to save a trained data generation model for future use.
+# Specify path location to save a trained data generation model for future use.
+my_generator.save_model('my_flexgan_model.h5')
 
-my_generator = flex.generator(csv_path='my_data.csv', model_path='my_flexgan_model.h5') # Import a pretrained model to generate data.
+# Import a pretrained model to generate data.
+my_generator = flex.generator(csv_path='my_data.csv', model_path='my_flexgan_model.h5')
 ```
 
 Check out [this](https://colab.research.google.com/github/emuccino/flexgan/blob/master/flexgan_demo.ipynb) colab notebook for an example.
