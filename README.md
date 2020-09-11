@@ -49,4 +49,5 @@ Check out [this](https://colab.research.google.com/github/emuccino/flexgan/blob/
 Please reach out if you have any questions, suggestions, or would like to contribute to the project.
 
 email: emuccino@mindboard.com
+
 LinkedIn: [www.linkedin.com/in/emuccino/](https://www.linkedin.com/in/emuccino/)
