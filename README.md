@@ -1,3 +1,5 @@
+![FlexGAN](https://flexlake.io/img/FlexGAN_LOGO_transparent_crop.png)
+
 [flexlake.io](https://flexlake.io/)
 
 ## Description
