@@ -1,4 +1,4 @@
-[flexlake.io](https://flexlake.io/) colab notebook for an example.
+[flexlake.io](https://flexlake.io/)
 
 ## Description
 
