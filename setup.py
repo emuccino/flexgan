@@ -13,9 +13,9 @@ setup(
   install_requires=[
           'numpy',
           'pandas',
-          'tensorflow',
           'scikit-learn',
-          'scipy'
+          'scipy',
+          'tensorflow-gpu'
       ],
   classifiers=[
     'Development Status :: 3 - Alpha',
